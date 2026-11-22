@@ -1,0 +1,30 @@
+# --- deps ---
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY apps/admin/package*.json ./
+RUN npm ci
+
+# --- build ---
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY apps/admin/ ./
+# Baked in at build time — Next.js inlines NEXT_PUBLIC_* vars into the
+# client bundle, so this can't be a runtime env var like the API's config.
+# Override with --build-arg for staging/prod.
+ARG NEXT_PUBLIC_API_BASE_URL=https://api.rajarani.app
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+RUN npm run build
+
+# --- runtime ---
+FROM node:20-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/public ./public
+COPY --from=build /app/package*.json ./
+COPY --from=build /app/next.config.* ./
+RUN npm ci --omit=dev
+
+EXPOSE 3001
+CMD ["npm", "run", "start"]

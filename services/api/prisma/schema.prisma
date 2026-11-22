@@ -1,0 +1,540 @@
+// Raja Rani — Core Database Schema (Phase 1)
+// Scope: matches overview.pdf exactly. No speculative modules.
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- ENUMS ----------
+
+enum UserRole {
+  STUDENT
+  INSTRUCTOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+  UNPUBLISHED
+}
+
+enum CourseAccessType {
+  FREE
+  PAID
+}
+
+enum LessonContentType {
+  VIDEO
+  PDF
+  RESOURCE_LINK
+}
+
+enum EnrollmentSource {
+  FREE
+  PURCHASE
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  CREATED
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum LiveClassStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+  CANCELLED
+}
+
+enum NotificationType {
+  COURSE_ANNOUNCEMENT
+  LIVE_CLASS_REMINDER
+  NEW_COURSE
+  PAYMENT_UPDATE
+  COMMUNITY
+  SYSTEM
+}
+
+// ---------- USERS & AUTH ----------
+
+model User {
+  id            String     @id @default(uuid())
+  name          String
+  email         String?    @unique
+  phone         String?    @unique
+  passwordHash  String?
+  googleId      String?    @unique
+  role          UserRole   @default(STUDENT)
+  status        UserStatus @default(ACTIVE)
+  avatarUrl     String?
+  emailVerified Boolean    @default(false)
+  phoneVerified Boolean    @default(false)
+  failedLoginAttempts Int  @default(0)
+  lockedUntil   DateTime?
+  mfaSecret     String?    // base32 TOTP secret, set once MFA setup begins
+  mfaEnabled    Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  deletedAt     DateTime?
+
+  // relations
+  refreshTokens   RefreshToken[]
+  otps            Otp[]
+  enrollments     Enrollment[]
+  orders          Order[]
+  progress        LessonProgress[]
+  communityPosts  CommunityPost[]
+  comments        CommunityComment[]
+  certificates    Certificate[]
+  notifications   Notification[]
+  instructedCourses Course[]        @relation("InstructorCourses")
+  liveParticipations LiveClassParticipant[]
+  reviews         Review[]
+  supportTickets  SupportTicket[]
+  reports         Report[]
+
+  @@index([role])
+  @@index([status])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Otp {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  target    String   // phone or email the OTP was sent to
+  codeHash  String
+  purpose   String   // LOGIN | REGISTER | RESET_PASSWORD
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([target, purpose])
+}
+
+// ---------- COURSES ----------
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  slug      String   @unique
+  iconUrl   String?
+  createdAt DateTime @default(now())
+
+  courses Course[]
+}
+
+model Course {
+  id               String           @id @default(uuid())
+  title            String
+  slug             String           @unique
+  thumbnailUrl     String?
+  shortDescription String?
+  description      String?
+  learningOutcomes String[]
+  categoryId       String?
+  category         Category?        @relation(fields: [categoryId], references: [id])
+  instructorId     String?
+  instructor       User?            @relation("InstructorCourses", fields: [instructorId], references: [id])
+  accessType       CourseAccessType @default(FREE)
+  price            Decimal?         @db.Decimal(10, 2)
+  discountPrice    Decimal?         @db.Decimal(10, 2)
+  durationMinutes  Int?
+  status           CourseStatus     @default(DRAFT)
+  certificateEnabled Boolean        @default(false)
+  certificateMinCompletionPct Int   @default(100)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  deletedAt        DateTime?
+
+  chapters    Chapter[]
+  enrollments Enrollment[]
+  orderItems  OrderItem[]
+  liveClasses LiveClass[]
+  certificates Certificate[]
+  reviews     Review[]
+
+  @@index([status])
+  @@index([categoryId])
+}
+
+model Chapter {
+  id        String   @id @default(uuid())
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title     String
+  order     Int
+  createdAt DateTime @default(now())
+
+  lessons Lesson[]
+
+  @@index([courseId])
+}
+
+model Lesson {
+  id           String            @id @default(uuid())
+  chapterId    String
+  chapter      Chapter           @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  title        String
+  order        Int
+  contentType  LessonContentType
+  videoAssetId String?           // provider-side video ID (never a public URL)
+  durationSeconds Int?
+  pdfUrl       String?
+  resourceUrl  String?
+  isFreePreview Boolean          @default(false)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  progress LessonProgress[]
+
+  @@index([chapterId])
+}
+
+// ---------- ENROLLMENT & PROGRESS ----------
+
+model Enrollment {
+  id         String           @id @default(uuid())
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId   String
+  course     Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  source     EnrollmentSource
+  enrolledAt DateTime         @default(now())
+
+  @@unique([userId, courseId])
+  @@index([courseId])
+}
+
+model LessonProgress {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lessonId      String
+  lesson        Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  completed     Boolean   @default(false)
+  lastPositionSeconds Int @default(0)
+  completedAt   DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+}
+
+// ---------- PAYMENTS ----------
+
+model Order {
+  id          String      @id @default(uuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id])
+  status      OrderStatus @default(PENDING)
+  totalAmount Decimal     @db.Decimal(10, 2)
+  currency    String      @default("INR")
+  couponId    String?
+  coupon      Coupon?     @relation(fields: [couponId], references: [id])
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  items    OrderItem[]
+  payments Payment[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model OrderItem {
+  id       String  @id @default(uuid())
+  orderId  String
+  order    Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  courseId String
+  course   Course  @relation(fields: [courseId], references: [id])
+  price    Decimal @db.Decimal(10, 2)
+
+  @@index([orderId])
+}
+
+// Every inbound payment-gateway event, keyed by provider reference,
+// so webhooks are idempotent by construction.
+model Payment {
+  id                String        @id @default(uuid())
+  orderId           String
+  order             Order         @relation(fields: [orderId], references: [id])
+  provider          String        // "razorpay" | "google_play_billing"
+  providerOrderId   String?
+  providerPaymentId String?       @unique
+  amount            Decimal       @db.Decimal(10, 2)
+  currency          String        @default("INR")
+  status            PaymentStatus @default(CREATED)
+  rawPayload        Json?         // store gateway payload for reconciliation, never secrets
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([orderId])
+  @@index([provider, providerPaymentId])
+}
+
+model Coupon {
+  id            String    @id @default(uuid())
+  code          String    @unique
+  percentOff    Int?
+  amountOff     Decimal?  @db.Decimal(10, 2)
+  maxRedemptions Int?
+  redemptionCount Int      @default(0)
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  orders Order[]
+}
+
+// ---------- LIVE CLASSES ----------
+
+model LiveClass {
+  id            String          @id @default(uuid())
+  courseId      String?
+  course        Course?         @relation(fields: [courseId], references: [id])
+  title         String
+  instructorName String
+  scheduledAt   DateTime
+  durationMinutes Int
+  status        LiveClassStatus @default(SCHEDULED)
+  joinUrl       String?         // provider-issued, generated per eligible user at join time in real impl
+  recordingUrl  String?
+  createdAt     DateTime        @default(now())
+
+  participants LiveClassParticipant[]
+
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+model LiveClassParticipant {
+  id          String   @id @default(uuid())
+  liveClassId String
+  liveClass   LiveClass @relation(fields: [liveClassId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reminderSet Boolean   @default(false)
+  reminderSentAt DateTime?
+  joinedAt    DateTime?
+
+  @@unique([liveClassId, userId])
+}
+
+// ---------- COMMUNITY ----------
+
+model CommunityPost {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body      String
+  imageUrl  String?
+  isAnnouncement Boolean @default(false)
+  createdAt DateTime @default(now())
+  deletedAt DateTime?
+
+  comments CommunityComment[]
+
+  @@index([createdAt])
+}
+
+model CommunityComment {
+  id        String   @id @default(uuid())
+  postId    String
+  post      CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+  deletedAt DateTime?
+
+  @@index([postId])
+}
+
+// ---------- CERTIFICATES ----------
+
+model Certificate {
+  id              String   @id @default(uuid())
+  certificateNo   String   @unique // human-readable, e.g. RR-2026-000123
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  courseId        String
+  course          Course   @relation(fields: [courseId], references: [id])
+  issuedAt        DateTime @default(now())
+  pdfUrl          String?
+
+  @@unique([userId, courseId])
+}
+
+// ---------- REPORTS (flagging community posts / reviews for moderation) ----------
+
+enum ReportedResourceType {
+  COMMUNITY_POST
+  COMMUNITY_COMMENT
+  REVIEW
+}
+
+model Report {
+  id           String               @id @default(uuid())
+  reporterId   String
+  reporter     User                 @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+  resourceType ReportedResourceType
+  resourceId   String
+  reason       String
+  resolved     Boolean              @default(false)
+  createdAt    DateTime             @default(now())
+
+  // Deliberately no @@unique([reporterId, resourceType, resourceId]) —
+  // multiple distinct reasons from the same reporter over time are
+  // legitimate; the admin queue naturally groups by resourceId if that
+  // view is ever needed, no DB constraint required for it.
+  @@index([resourceType, resourceId])
+  @@index([resolved])
+}
+
+// ---------- SUPPORT ----------
+
+enum SupportCategory {
+  PAYMENT
+  COURSE
+  VIDEO
+  OTHER
+}
+
+enum SupportStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model SupportTicket {
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category       SupportCategory
+  subject        String
+  message        String
+  status         SupportStatus   @default(OPEN)
+  adminResponse  String?
+  respondedById  String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+// ---------- REVIEWS ----------
+
+model Review {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  rating    Int      // 1-5, enforced in the DTO (class-validator), not the DB
+  body      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime? // moderation — same soft-delete pattern as CommunityPost
+
+  @@unique([userId, courseId]) // one review per user per course — "prevent duplicate reviews"
+  @@index([courseId])
+}
+
+// ---------- BANNERS ----------
+
+model Banner {
+  id          String    @id @default(uuid())
+  title       String
+  imageUrl    String
+  ctaLabel    String?
+  destination String?   // deep link or course slug
+  priority    Int       @default(0)
+  startDate   DateTime?
+  endDate     DateTime?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+}
+
+// ---------- NOTIFICATIONS ----------
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String
+  deepLink  String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt])
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String   @default("android")
+  createdAt DateTime @default(now())
+}
+
+// ---------- SETTINGS ----------
+
+model AppSetting {
+  key       String   @id
+  value     String   // stored as text; caller parses JSON if the value is structured
+  updatedAt DateTime @updatedAt
+}
+
+// ---------- AUDIT ----------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String
+  action     String   // e.g. "user.suspend", "course.publish", "coupon.create"
+  resource   String   // e.g. "User", "Course"
+  resourceId String
+  metadata   Json?    // safe before/after summary — never secrets
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([resource, resourceId])
+}

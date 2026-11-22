@@ -1,0 +1,66 @@
+version: "3.9"
+
+# Not a one-command production deploy — Postgres/Redis here are for
+# reference/self-hosting only. For real production, use a managed Postgres
+# (avoids you owning backups/HA) and a managed Redis; point API_URL/
+# DATABASE_URL/REDIS_URL at those instead. See docs/DEPLOYMENT.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rajarani}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real password}
+      POSTGRES_DB: ${POSTGRES_DB:-rajarani}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rajarani}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rajarani}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rajarani}
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      # Every other secret (JWT, Razorpay, Cloudflare, FCM) comes from your
+      # host's env or secret manager — never baked into this file.
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      CF_ACCOUNT_ID: ${CF_ACCOUNT_ID:-}
+      CF_STREAM_API_TOKEN: ${CF_STREAM_API_TOKEN:-}
+    ports:
+      - "4000:4000"
+
+  admin:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.admin
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:?e.g. https://api.rajarani.app}
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+
+volumes:
+  pgdata:
+  redisdata:

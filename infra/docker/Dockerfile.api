@@ -1,0 +1,29 @@
+# --- deps ---
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY services/api/package*.json ./
+RUN npm ci
+
+# --- build ---
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY services/api/ ./
+RUN npx prisma generate
+RUN npm run build
+
+# --- runtime ---
+FROM node:20-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=deps /app/package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+
+EXPOSE 4000
+# Migrations run as a separate release-step command in production
+# (`npx prisma migrate deploy`), never automatically on container start —
+# an app instance scaling to N replicas must not race N migration attempts.
+CMD ["node", "dist/main.js"]

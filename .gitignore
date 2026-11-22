@@ -1,0 +1,55 @@
+# Node
+node_modules/
+.next/
+dist/
+coverage/
+*.log
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Flutter
+apps/mobile/.dart_tool/
+apps/mobile/build/
+apps/mobile/android/
+apps/mobile/ios/
+apps/mobile/.flutter-plugins
+apps/mobile/.flutter-plugins-dependencies
+apps/mobile/.packages
+
+# Secrets — never commit
+**/secrets/
+*.pem
+*.p12
+*-service-account.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+.dev.vars
+
+# Dependencies and build output
+**/node_modules/
+**/dist/
+**/.next/
+**/coverage/
+*.tsbuildinfo
+
+# Sensitive credentials
+*.pem
+*.p12
+*.key
+*-service-account.json
+
+# OS files
+.DS_Store
